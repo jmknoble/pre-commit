@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 import logging
 import os.path
+import subprocess
 import sys
 
 from pre_commit.util import cmd_output
@@ -131,6 +132,19 @@ def get_changed_files(new, old):
     )
 
 
+def get_diff():
+    return cmd_output(
+        'git', 'diff', '--no-ext-diff', retcode=None, encoding=None,
+    )
+
+
+def print_diff(color=False):
+    subprocess.call((
+        'git', '--no-pager', 'diff', '--no-ext-diff',
+        '--color={}'.format({True: 'always', False: 'never'}[color]),
+    ))
+
+
 def head_rev(remote):
     _, out, _ = cmd_output('git', 'ls-remote', '--exit-code', remote, 'HEAD')
     return out.split()[0]
@@ -141,6 +155,20 @@ def has_diff(*args, **kwargs):
     assert not kwargs, kwargs
     cmd = ('git', 'diff', '--quiet', '--no-ext-diff') + args
     return cmd_output(*cmd, cwd=repo, retcode=None)[0]
+
+
+def has_unmerged_paths():
+    _, stdout, _ = cmd_output('git', 'ls-files', '--unmerged')
+    return bool(stdout.strip())
+
+
+def has_unstaged_config(config_file):
+    retcode, _, _ = cmd_output(
+        'git', 'diff', '--no-ext-diff', '--exit-code', config_file,
+        retcode=None,
+    )
+    # be explicit, other git errors don't mean it has an unstaged config.
+    return retcode == 1
 
 
 def commit(repo='.'):

@@ -59,6 +59,25 @@ def _add_hook_type_option(parser):
     )
 
 
+def _add_without_git_options(parser):
+    parser.add_argument(
+        '-G', '--without-git',
+        action='store_true', default=False,
+        help=(
+            "Do not assume pre-commit is running in a git project"
+            " (default: assume git)"
+        ),
+    )
+    parser.add_argument(
+        '-R', '--root',
+        action='store', default='.',
+        help=(
+            "The path to the root directory of the project"
+            " (default: current working directory)"
+        ),
+    )
+
+
 def _add_run_options(parser):
     parser.add_argument('hook', nargs='?', help='A single hook-id to run')
     parser.add_argument('--verbose', '-v', action='store_true', default=False)
@@ -101,14 +120,19 @@ def _adjust_args_and_chdir(args):
         args.files = [os.path.abspath(filename) for filename in args.files]
     if args.command == 'try-repo' and os.path.exists(args.repo):
         args.repo = os.path.abspath(args.repo)
+    if not hasattr(args, 'without_git'):
+        setattr(args, 'without_git', False)
+        setattr(args, 'root', None)
 
-    try:
-        os.chdir(git.get_root())
-    except CalledProcessError:
-        raise FatalError(
-            'git failed. Is it installed, and are you in a Git repository '
-            'directory?',
-        )
+    if not args.without_git:
+        try:
+            args.root = git.get_root()
+        except CalledProcessError:
+            raise FatalError(
+                'git failed. Is it installed, and are you in a Git repository '
+                'directory?',
+            )
+    os.chdir(args.root)
 
     args.config = os.path.relpath(args.config)
     if args.command in {'run', 'try-repo'}:
@@ -215,6 +239,7 @@ def main(argv=None):
     run_parser = subparsers.add_parser('run', help='Run hooks.')
     _add_color_option(run_parser)
     _add_config_option(run_parser)
+    _add_without_git_options(run_parser)
     _add_run_options(run_parser)
 
     sample_config_parser = subparsers.add_parser(

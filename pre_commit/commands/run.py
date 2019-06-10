@@ -3,15 +3,14 @@ from __future__ import unicode_literals
 import logging
 import os
 import re
-import subprocess
 import sys
 
 from identify.identify import tags_from_path
 
 from pre_commit import color
-from pre_commit import git
 from pre_commit import output
 from pre_commit.clientlib import load_config
+from pre_commit.git_adapter import GitAdapter
 from pre_commit.output import get_hook_message
 from pre_commit.repository import all_hooks
 from pre_commit.repository import install_hook_envs
@@ -73,7 +72,7 @@ SKIPPED = 'Skipped'
 NO_FILES = '(no files to check)'
 
 
-def _run_single_hook(classifier, hook, args, skips, cols):
+def _run_single_hook(git_shim, classifier, hook, args, skips, cols):
     filenames = classifier.filenames_for_hook(hook)
 
     if hook.language == 'pcre':
@@ -117,15 +116,11 @@ def _run_single_hook(classifier, hook, args, skips, cols):
     )
     sys.stdout.flush()
 
-    diff_before = cmd_output(
-        'git', 'diff', '--no-ext-diff', retcode=None, encoding=None,
-    )
+    diff_before = git_shim.get_diff()
     retcode, stdout, stderr = hook.run(
         tuple(filenames) if hook.pass_filenames else (),
     )
-    diff_after = cmd_output(
-        'git', 'diff', '--no-ext-diff', retcode=None, encoding=None,
-    )
+    diff_after = git_shim.get_diff()
 
     file_modifications = diff_before != diff_after
 
@@ -187,34 +182,35 @@ def _compute_cols(hooks, verbose):
     return max(cols, 80)
 
 
-def _all_filenames(args):
+def _all_filenames(git_shim, args):
     if args.origin and args.source:
-        return git.get_changed_files(args.origin, args.source)
+        return git_shim.get_changed_files(args.origin, args.source)
     elif args.hook_stage in {'prepare-commit-msg', 'commit-msg'}:
         return (args.commit_msg_filename,)
     elif args.files:
         return args.files
     elif args.all_files:
-        return git.get_all_files()
-    elif git.is_in_merge_conflict():
-        return git.get_conflicted_files()
+        return git_shim.get_all_files()
+    elif git_shim.is_in_merge_conflict():
+        return git_shim.get_conflicted_files()
     else:
-        return git.get_staged_files()
+        return git_shim.get_staged_files()
 
 
-def _run_hooks(config, hooks, args, environ):
+def _run_hooks(git_shim, config, hooks, args, environ):
     """Actually run the hooks."""
+    git_shim.set_diff_checkpoint()
     skips = _get_skips(environ)
     cols = _compute_cols(hooks, args.verbose)
-    filenames = _all_filenames(args)
+    filenames = _all_filenames(git_shim, args)
     filenames = filter_by_include_exclude(filenames, '', config['exclude'])
     classifier = Classifier(filenames)
     retval = 0
     for hook in hooks:
-        retval |= _run_single_hook(classifier, hook, args, skips, cols)
+        retval |= _run_single_hook(git_shim, classifier, hook, args, skips, cols)
         if retval and config['fail_fast']:
             break
-    if retval and args.show_diff_on_failure and git.has_diff():
+    if retval and args.show_diff_on_failure and git_shim.has_checkpointed_diff():
         if args.all_files:
             output.write_line(
                 'pre-commit hook(s) made changes.\n'
@@ -226,39 +222,22 @@ def _run_hooks(config, hooks, args, environ):
         output.write_line('All changes made by hooks:')
         # args.color is a boolean.
         # See user_color function in color.py
-        subprocess.call((
-            'git', '--no-pager', 'diff', '--no-ext-diff',
-            '--color={}'.format({True: 'always', False: 'never'}[args.color]),
-        ))
-
+        git_shim.print_checkpointed_diff(args.color)
     return retval
 
 
-def _has_unmerged_paths():
-    _, stdout, _ = cmd_output('git', 'ls-files', '--unmerged')
-    return bool(stdout.strip())
-
-
-def _has_unstaged_config(config_file):
-    retcode, _, _ = cmd_output(
-        'git', 'diff', '--no-ext-diff', '--exit-code', config_file,
-        retcode=None,
-    )
-    # be explicit, other git errors don't mean it has an unstaged config.
-    return retcode == 1
-
-
 def run(config_file, store, args, environ=os.environ):
+    git_shim = GitAdapter(without_git=args.without_git, root=args.root)
     no_stash = args.all_files or bool(args.files)
 
     # Check if we have unresolved merge conflict files and fail fast.
-    if _has_unmerged_paths():
+    if git_shim.has_unmerged_paths():
         logger.error('Unmerged files.  Resolve before committing.')
         return 1
     if bool(args.source) != bool(args.origin):
         logger.error('Specify both --origin and --source.')
         return 1
-    if _has_unstaged_config(config_file) and not no_stash:
+    if git_shim.has_unstaged_config(config_file) and not no_stash:
         logger.error(
             'Your pre-commit configuration is unstaged.\n'
             '`git add {}` to fix this.'.format(config_file),
@@ -290,4 +269,4 @@ def run(config_file, store, args, environ=os.environ):
 
         install_hook_envs(hooks, store)
 
-        return _run_hooks(config, hooks, args, environ)
+        return _run_hooks(git_shim, config, hooks, args, environ)
