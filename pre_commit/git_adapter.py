@@ -136,12 +136,10 @@ class GitAdapter(object):
 
     def get_all_files(self):
         if self.without_git:
-            ignorefile = os.path.join(self.root, '.gitignore')
-            ignoredirs = [os.path.join(self.root, '.git')]
             return _list_filesystem_tree(
                 self.root,
-                ignorefile=ignorefile,
-                ignoredirs=ignoredirs,
+                ignorefile=os.path.join(self.root, '.gitignore'),
+                prunedirs=['.git'],
             )
         return git.get_all_files()
 
